@@ -4,6 +4,8 @@ mod devices;
 mod hugetlb;
 mod manager;
 mod memory;
+mod network_classifier;
+mod network_priority;
 mod pids;
 pub use controller::Controller;
 pub use controller_type::ControllerType;

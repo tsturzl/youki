@@ -7,13 +7,18 @@ use procfs::process::Process;
 
 use crate::{cgroups::ControllerType, spec::LinuxResources, utils::PathBufExt};
 
-use super::{devices::Devices, hugetlb::Hugetlb, memory::Memory, pids::Pids, Controller};
+use super::{
+    devices::Devices, hugetlb::Hugetlb, memory::Memory, network_classifier::NetworkClassifier,
+    network_priority::NetworkPriority, pids::Pids, Controller,
+};
 
 const CONTROLLERS: &[ControllerType] = &[
     ControllerType::Devices,
     ControllerType::HugeTlb,
     ControllerType::Memory,
     ControllerType::Pids,
+    ControllerType::NetworkPriority,
+    ControllerType::NetworkClassifier,
 ];
 
 pub struct Manager {
@@ -40,6 +45,8 @@ impl Manager {
                 "hugetlb" => Hugetlb::apply(linux_resources, &subsys.1, pid)?,
                 "memory" => Memory::apply(linux_resources, &subsys.1, pid)?,
                 "pids" => Pids::apply(linux_resources, &subsys.1, pid)?,
+                "net_prio" => NetworkPriority::apply(linux_resources, &subsys.1, pid)?,
+                "net_cls" => NetworkClassifier::apply(linux_resources, &subsys.1, pid)?,
                 _ => continue,
             }
         }

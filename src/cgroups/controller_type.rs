@@ -5,6 +5,8 @@ pub enum ControllerType {
     HugeTlb,
     Pids,
     Memory,
+    NetworkPriority,
+    NetworkClassifier,
 }
 
 impl ToString for ControllerType {
@@ -14,6 +16,8 @@ impl ToString for ControllerType {
             Self::HugeTlb => "hugetlb".into(),
             Self::Pids => "pids".into(),
             Self::Memory => "memory".into(),
+            Self::NetworkPriority => "net_prio".into(),
+            Self::NetworkClassifier => "net_cls".into(),
         }
     }
 }
