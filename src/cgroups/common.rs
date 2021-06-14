@@ -6,7 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, bail, Result};
+
+use anyhow::{bail, Context, Result};
 use nix::unistd::Pid;
 use oci_spec::LinuxResources;
 use procfs::process::Process;
@@ -45,8 +46,10 @@ pub fn write_cgroup_file_str<P: AsRef<Path>>(path: P, data: &str) -> Result<()> 
         .create(false)
         .write(true)
         .truncate(false)
-        .open(path)?
-        .write_all(data.as_bytes())?;
+        .open(path.as_ref())
+        .with_context(|| format!("failed to open {:?}", path.as_ref()))?
+        .write_all(data.as_bytes())
+        .with_context(|| format!("failed to write to {:?}", path.as_ref()))?;
 
     Ok(())
 }
@@ -57,19 +60,35 @@ pub fn write_cgroup_file<P: AsRef<Path>, T: ToString>(path: P, data: T) -> Resul
         .create(false)
         .write(true)
         .truncate(false)
-        .open(path)?
-        .write_all(data.to_string().as_bytes())?;
+        .open(path.as_ref())
+        .with_context(|| format!("failed to open {:?}", path.as_ref()))?
+        .write_all(data.to_string().as_bytes())
+        .with_context(|| format!("failed to write to {:?}", path.as_ref()))?;
 
     Ok(())
 }
 
-pub fn get_cgroupv1_mount_path(subsystem: &str) -> Result<PathBuf> {
-    Process::myself()?
+pub fn get_supported_cgroup_fs() -> Result<Vec<Cgroup>> {
+    let cgroup_mount = Process::myself()?
         .mountinfo()?
         .into_iter()
-        .find(|m| m.fs_type == "cgroup" && m.mount_point.ends_with(subsystem))
-        .map(|m| m.mount_point)
-        .ok_or_else(|| anyhow!("could not find mountpoint for {}", subsystem))
+        .find(|m| m.fs_type == "cgroup");
+
+    let cgroup2_mount = Process::myself()?
+        .mountinfo()?
+        .into_iter()
+        .find(|m| m.fs_type == "cgroup2");
+
+    let mut cgroups = vec![];
+    if cgroup_mount.is_some() {
+        cgroups.push(Cgroup::V1);
+    }
+
+    if cgroup2_mount.is_some() {
+        cgroups.push(Cgroup::V2);
+    }
+
+    Ok(cgroups)
 }
 
 pub fn create_cgroup_manager<P: Into<PathBuf>>(cgroup_path: P) -> Result<Box<dyn CgroupManager>> {

@@ -1,10 +1,13 @@
+//! Utility functionality
+
+use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use nix::{env::clearenv, errno::Errno, unistd};
+use nix::unistd;
 
 pub trait PathBufExt {
     fn as_in_container(&self) -> Result<PathBuf>;
@@ -14,7 +17,7 @@ pub trait PathBufExt {
 impl PathBufExt for PathBuf {
     fn as_in_container(&self) -> Result<PathBuf> {
         if self.is_relative() {
-            bail!("Relative path cannnot be converted to the path in the container.")
+            bail!("Relative path cannot be converted to the path in the container.")
         } else {
             let path_string = self.to_string_lossy().into_owned();
             Ok(PathBuf::from(path_string[1..].to_string()))
@@ -24,7 +27,7 @@ impl PathBufExt for PathBuf {
     fn join_absolute_path(&self, p: &Path) -> Result<PathBuf> {
         if !p.is_absolute() && !p.as_os_str().is_empty() {
             bail!(
-                "connnot join {:?} because it is not the absolute path.",
+                "cannot join {:?} because it is not the absolute path.",
                 p.display()
             )
         }
@@ -38,27 +41,23 @@ pub fn do_exec(path: impl AsRef<Path>, args: &[String], envs: &[String]) -> Resu
         .iter()
         .map(|s| CString::new(s.to_string()).unwrap_or_default())
         .collect();
-    let envs: Vec<CString> = envs
-        .iter()
-        .map(|s| CString::new(s.to_string()).unwrap_or_default())
-        .collect();
 
-    unsafe {
-        clearenv()?;
-    }
-    for e in envs {
-        putenv(&e)?
-    }
+    // clear env vars
+    env::vars().for_each(|(key, _value)| std::env::remove_var(key));
+    // set env vars
+    envs.iter().for_each(|e| {
+        let mut split = e.split("=");
+        match split.next() {
+            Some(key) => {
+                let value: String = split.collect::<Vec<&str>>().join("=");
+                env::set_var(key, value)
+            }
+            None => {}
+        };
+    });
 
     unistd::execvp(&p, &a)?;
     Ok(())
-}
-
-#[inline]
-fn putenv(string: &CString) -> nix::Result<()> {
-    let ptr = string.clone().into_raw();
-    let res = unsafe { libc::putenv(ptr as *mut libc::c_char) };
-    Errno::result(res).map(drop)
 }
 
 // TODO implement

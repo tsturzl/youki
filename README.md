@@ -1,6 +1,13 @@
 # youki: A container runtime in Rust
 
-<img src="docs/youki.png" width="230" height="230">
+[![Discord](https://img.shields.io/discord/849943000770412575.svg?logo=discord)](https://discord.gg/zHnyXKSQFD)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/containers/youki)](https://github.com/containers/youki/graphs/commit-activity)
+[![GitHub contributors](https://img.shields.io/github/contributors/containers/youki)](https://github.com/containers/youki/graphs/contributors)
+[![Github CI](https://github.com/containers/youki/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/containers/youki/actions)
+
+<p align="center">
+  <img src="docs/youki.png" width="230" height="230">
+</p>
 
 youki is an implementation of [runtime-spec](https://github.com/opencontainers/runtime-spec) in Rust, referring to [runc](https://github.com/opencontainers/runc).
 
@@ -31,9 +38,13 @@ For other platforms, please use the devcontainer that we prepared.
 ## Requires
 
 - Rust(See [here](https://www.rust-lang.org/tools/install))
-- Docker
+- Docker(See [here](https://docs.docker.com/engine/install))
 
 ## Building
+
+```sh
+$ cargo install cargo-when # installs prerequisite for building youki
+```
 
 ```sh
 $ git clone git@github.com:containers/youki.git
@@ -43,6 +54,7 @@ $ ./youki -h # you can get information about youki command
 ```
 
 ## Tutorial
+
 Let's try to run a container that executes `sleep 5` using youki.
 Maybe this tutorial is need permission as root.
 
@@ -86,7 +98,7 @@ $ docker run -it --rm --runtime youki busybox
 
 ### Integration test
 
-Go and node-tap are required to run integration test. See the [opencontainers/runtime-tools]((https://github.com/opencontainers/runtime-tools) README for details.
+Go and node-tap are required to run integration test. See the [opencontainers/runtime-tools](https://github.com/opencontainers/runtime-tools) README for details.
 
 ```
 $ git submodule update --init --recursive
@@ -94,6 +106,7 @@ $ ./integration_test.sh
 ```
 
 # Community
+
 We also have an active [Discord](https://discord.gg/h7R3HgWUct) if you'd like to come and chat with us.
 
 # Design and implementation of youki

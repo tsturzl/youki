@@ -1,3 +1,6 @@
+//! During kernel initialization, a minimal replica of the ramfs filesystem is loaded, called rootfs.
+//! Most systems mount another filesystem over it
+
 use std::fs::OpenOptions;
 use std::fs::{canonicalize, create_dir_all, remove_file};
 use std::os::unix::fs::symlink;
@@ -43,7 +46,7 @@ pub fn prepare_rootfs(spec: &Spec, rootfs: &Path, bind_devices: bool) -> Result<
         let ml = &spec.linux.as_ref().unwrap().mount_label;
         if m.typ == "cgroup" {
             // skip
-            log::warn!("A feature of cgoup is unimplemented.");
+            log::warn!("A feature of cgroup is unimplemented.");
         } else if m.destination == PathBuf::from("/dev") {
             mount_to_container(&m, rootfs, flags & !MsFlags::MS_RDONLY, &data, &ml)?;
         } else {
