@@ -1,9 +1,21 @@
 $ubuntu_script = <<-SCRIPT
+fallocate -l 1G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
+
 apt-get update
 apt-get install -y --no-install-recommends build-essential libssl-dev nodejs npm
 SCRIPT
 
 $fedora_script = <<-SCRIPT
+fallocate -l 1G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
+
 dnf -y update && dnf clean all
 dnf -y install git gcc curl openssl openssl-devel ca-certificates tar nodejs && dnf clean all
 SCRIPT
