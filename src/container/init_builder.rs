@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{notify_socket::NotifyListener, rootless, tty, utils};
+use crate::{notify_socket::NOTIFY_FILE, rootless, tty, utils};
 
 use super::{
     builder::ContainerBuilder, builder_impl::ContainerBuilderImpl, Container, ContainerStatus,
@@ -42,17 +42,24 @@ impl InitContainerBuilder {
         let container_dir = self.create_container_dir()?;
         let spec = self.load_and_safeguard_spec(&container_dir)?;
 
-        unistd::chdir(&*container_dir)?;
-        let container_state = self.create_container_state(&container_dir)?;
+        let container_state = self
+            .create_container_state(&container_dir)?
+            .set_systemd(self.use_systemd)
+            .set_annotations(spec.annotations.clone());
 
-        let notify_socket: NotifyListener = NotifyListener::new(&container_dir)?;
+        unistd::chdir(&*container_dir)?;
+        let notify_path = container_dir.join(NOTIFY_FILE);
         // convert path of root file system of the container to absolute path
-        let rootfs = fs::canonicalize(&spec.root.path)?;
+        let rootfs = fs::canonicalize(&spec.root.as_ref().context("no root in spec")?.path)?;
 
         // if socket file path is given in commandline options,
         // get file descriptors of console socket
         let csocketfd = if let Some(console_socket) = &self.base.console_socket {
-            Some(tty::setup_console_socket(&container_dir, console_socket)?)
+            Some(tty::setup_console_socket(
+                &container_dir,
+                console_socket,
+                "console-socket",
+            )?)
         } else {
             None
         };
@@ -63,16 +70,15 @@ impl InitContainerBuilder {
             init: true,
             syscall: self.base.syscall,
             container_id: self.base.container_id,
-            root_path: self.base.root_path,
             pid_file: self.base.pid_file,
             console_socket: csocketfd,
             use_systemd: self.use_systemd,
-            container_dir,
-            spec,
+            spec: &spec,
             rootfs,
             rootless,
-            notify_socket,
+            notify_path,
             container: Some(container_state),
+            preserve_fds: self.base.preserve_fds,
         };
 
         builder_impl.create()?;
@@ -94,16 +100,11 @@ impl InitContainerBuilder {
     fn load_and_safeguard_spec(&self, container_dir: &Path) -> Result<Spec> {
         let source_spec_path = self.bundle.join("config.json");
         let target_spec_path = container_dir.join("config.json");
-        fs::copy(&source_spec_path, &target_spec_path).with_context(|| {
-            format!(
-                "failed to copy {:?} to {:?}",
-                source_spec_path, target_spec_path
-            )
-        })?;
 
-        let mut spec = oci_spec::Spec::load(&target_spec_path)?;
-        unistd::chdir(&self.bundle)?;
-        spec.canonicalize_rootfs()?;
+        let mut spec = oci_spec::Spec::load(&source_spec_path)?;
+        spec.canonicalize_rootfs(&self.bundle)?;
+        spec.save(target_spec_path)?;
+
         Ok(spec)
     }
 
@@ -113,7 +114,7 @@ impl InitContainerBuilder {
             ContainerStatus::Creating,
             None,
             self.bundle.as_path().to_str().unwrap(),
-            &container_dir,
+            container_dir,
         )?;
         container.save()?;
         Ok(container)

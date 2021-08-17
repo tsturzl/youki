@@ -2,25 +2,29 @@
 
 use std::os::unix::fs::symlink;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::prelude::RawFd;
 use std::path::Path;
 
+use anyhow::Context;
 use anyhow::{bail, Result};
 use nix::errno::Errno;
 use nix::sys::socket;
 use nix::sys::uio;
+use nix::unistd::dup2;
 use nix::unistd::{close, setsid};
 
-use crate::stdio;
-use crate::stdio::FileDescriptor;
+const STDIN: i32 = 0;
+const STDOUT: i32 = 1;
+const STDERR: i32 = 2;
 
 // TODO: Handling when there isn't console-socket.
-
 pub fn setup_console_socket(
     container_dir: &Path,
     console_socket_path: &Path,
-) -> Result<FileDescriptor> {
-    let csocket = "console-socket";
-    symlink(console_socket_path, container_dir.join(csocket))?;
+    socket_name: &str,
+) -> Result<RawFd> {
+    let linked = container_dir.join(socket_name);
+    symlink(console_socket_path, &linked)?;
 
     let mut csocketfd = socket::socket(
         socket::AddressFamily::Unix,
@@ -30,23 +34,24 @@ pub fn setup_console_socket(
     )?;
     csocketfd = match socket::connect(
         csocketfd,
-        &socket::SockAddr::Unix(socket::UnixAddr::new(&*csocket)?),
+        &socket::SockAddr::Unix(socket::UnixAddr::new(&*socket_name)?),
     ) {
-        Err(e) => {
-            if e != ::nix::Error::Sys(Errno::ENOENT) {
-                bail!("failed to open {}", csocket);
+        Err(errno) => {
+            if !matches!(errno, Errno::ENOENT) {
+                bail!("failed to open {}", socket_name);
             }
             -1
         }
         Ok(()) => csocketfd,
     };
-    Ok(csocketfd.into())
+    Ok(csocketfd)
 }
 
-pub fn setup_console(console_fd: &FileDescriptor) -> Result<()> {
+pub fn setup_console(console_fd: &RawFd) -> Result<()> {
     // You can also access pty master, but it is better to use the API.
     // ref. https://github.com/containerd/containerd/blob/261c107ffc4ff681bc73988f64e3f60c32233b37/vendor/github.com/containerd/go-runc/console.go#L139-L154
-    let openpty_result = nix::pty::openpty(None, None)?;
+    let openpty_result =
+        nix::pty::openpty(None, None).context("could not create pseudo terminal")?;
     let pty_name: &[u8] = b"/dev/ptmx";
     let iov = [uio::IoVec::from_slice(pty_name)];
     let fds = [openpty_result.master];
@@ -57,15 +62,25 @@ pub fn setup_console(console_fd: &FileDescriptor) -> Result<()> {
         &[cmsg],
         socket::MsgFlags::empty(),
         None,
-    )?;
+    )
+    .context("failed to send pty master")?;
 
     setsid()?;
     if unsafe { libc::ioctl(openpty_result.slave, libc::TIOCSCTTY) } < 0 {
         log::warn!("could not TIOCSCTTY");
     };
-    let slave = FileDescriptor::from(openpty_result.slave);
-    stdio::connect_stdio(&slave, &slave, &slave).expect("could not dup tty to stderr");
-    close(console_fd.as_raw_fd())?;
+    let slave = openpty_result.slave;
+    connect_stdio(&slave, &slave, &slave).context("could not dup tty to stderr")?;
+    close(console_fd.as_raw_fd()).context("could not close console socket")?;
+    Ok(())
+}
+
+fn connect_stdio(stdin: &RawFd, stdout: &RawFd, stderr: &RawFd) -> Result<()> {
+    dup2(stdin.as_raw_fd(), STDIN)?;
+    dup2(stdout.as_raw_fd(), STDOUT)?;
+    // FIXME: Rarely does it fail.
+    // error message: `Error: Resource temporarily unavailable (os error 11)`
+    dup2(stderr.as_raw_fd(), STDERR)?;
     Ok(())
 }
 
@@ -81,6 +96,8 @@ mod tests {
     use serial_test::serial;
 
     use crate::utils::{create_temp_dir, TempDir};
+
+    const CONSOLE_SOCKET: &str = "console-socket";
 
     fn setup(testname: &str) -> Result<(TempDir, PathBuf, PathBuf)> {
         let testdir = create_temp_dir(testname)?;
@@ -100,7 +117,7 @@ mod tests {
         let (testdir, rundir_path, socket_path) = init.unwrap();
         let lis = UnixListener::bind(Path::join(&testdir, "console-socket"));
         assert!(lis.is_ok());
-        let fd = setup_console_socket(&&rundir_path, &socket_path);
+        let fd = setup_console_socket(&rundir_path, &socket_path, CONSOLE_SOCKET);
         assert!(fd.is_ok());
         assert_ne!(fd.unwrap().as_raw_fd(), -1);
     }
@@ -111,7 +128,7 @@ mod tests {
         let init = setup("test_setup_console_socket_empty");
         assert!(init.is_ok());
         let (_testdir, rundir_path, socket_path) = init.unwrap();
-        let fd = setup_console_socket(&rundir_path, &socket_path);
+        let fd = setup_console_socket(&rundir_path, &socket_path, CONSOLE_SOCKET);
         assert!(fd.is_ok());
         assert_eq!(fd.unwrap().as_raw_fd(), -1);
     }
@@ -124,7 +141,7 @@ mod tests {
         let (testdir, rundir_path, socket_path) = init.unwrap();
         let _socket = File::create(Path::join(&testdir, "console-socket"));
         assert!(_socket.is_ok());
-        let fd = setup_console_socket(&rundir_path, &socket_path);
+        let fd = setup_console_socket(&rundir_path, &socket_path, CONSOLE_SOCKET);
         assert!(fd.is_err());
     }
 
@@ -136,7 +153,7 @@ mod tests {
         let (testdir, rundir_path, socket_path) = init.unwrap();
         let lis = UnixListener::bind(Path::join(&testdir, "console-socket"));
         assert!(lis.is_ok());
-        let fd = setup_console_socket(&&rundir_path, &socket_path);
+        let fd = setup_console_socket(&rundir_path, &socket_path, CONSOLE_SOCKET);
         let status = setup_console(&fd.unwrap());
         assert!(status.is_ok());
     }

@@ -1,15 +1,15 @@
 //! Handles Management of Capabilities
-use crate::command::Syscall;
+use crate::syscall::Syscall;
 use caps::*;
 
 use anyhow::Result;
-use oci_spec::{LinuxCapabilities, LinuxCapabilityType};
+use oci_spec::LinuxCapabilities;
 
 /// Converts a list of capability types to capabilities has set
-fn to_set(caps: &[LinuxCapabilityType]) -> CapsHashSet {
+fn to_set(caps: &[Capability]) -> CapsHashSet {
     let mut capabilities = CapsHashSet::new();
     for c in caps {
-        capabilities.insert(c.cap);
+        capabilities.insert(*c);
     }
     capabilities
 }
@@ -26,23 +26,36 @@ pub fn reset_effective(syscall: &impl Syscall) -> Result<()> {
 /// Drop any extra granted capabilities, and reset to defaults which are in oci specification
 pub fn drop_privileges(cs: &LinuxCapabilities, syscall: &impl Syscall) -> Result<()> {
     log::debug!("dropping bounding capabilities to {:?}", cs.bounding);
-    syscall.set_capability(CapSet::Bounding, &to_set(&cs.bounding))?;
-
-    syscall.set_capability(CapSet::Effective, &to_set(&cs.effective))?;
-    syscall.set_capability(CapSet::Permitted, &to_set(&cs.permitted))?;
-    syscall.set_capability(CapSet::Inheritable, &to_set(&cs.inheritable))?;
-
-    // check specifically for ambient, as those might not always be available
-    if let Err(e) = syscall.set_capability(CapSet::Ambient, &to_set(&cs.ambient)) {
-        log::error!("failed to set ambient capabilities: {}", e);
+    if let Some(bounding) = cs.bounding.as_ref() {
+        syscall.set_capability(CapSet::Bounding, &to_set(bounding))?;
     }
+
+    if let Some(effective) = cs.effective.as_ref() {
+        syscall.set_capability(CapSet::Effective, &to_set(effective))?;
+    }
+
+    if let Some(permitted) = cs.permitted.as_ref() {
+        syscall.set_capability(CapSet::Permitted, &to_set(permitted))?;
+    }
+
+    if let Some(inheritable) = cs.inheritable.as_ref() {
+        syscall.set_capability(CapSet::Inheritable, &to_set(inheritable))?;
+    }
+
+    if let Some(ambient) = cs.ambient.as_ref() {
+        // check specifically for ambient, as those might not always be available
+        if let Err(e) = syscall.set_capability(CapSet::Ambient, &to_set(ambient)) {
+            log::error!("failed to set ambient capabilities: {}", e);
+        }
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::test::TestHelperSyscall;
+    use crate::syscall::test::TestHelperSyscall;
 
     #[test]
     fn test_reset_effective() {

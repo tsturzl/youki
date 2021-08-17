@@ -1,7 +1,9 @@
 youki
-/tutorial
 
-/target
+/tutorial
+.idea/
+
+**/target
 .vagrant/
 
 tags

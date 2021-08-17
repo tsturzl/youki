@@ -39,7 +39,7 @@ youki is not at the practical stage yet. However, it is getting closer to practi
 - [x] namespaces
 - [x] capabilities
 - [x] rlimits
-- [ ] cgroups v1(WIP on [#9](https://github.com/containers/youki/issues/9))
+- [x] cgroups v1
 - [ ] cgroups v2(WIP on [#78](https://github.com/containers/youki/issues/78))
 - [ ] seccomp(WIP on [#25](https://github.com/containers/youki/issues/25))
 - [ ] hooks(WIP on [#13](https://github.com/containers/youki/issues/13))
@@ -48,7 +48,7 @@ youki is not at the practical stage yet. However, it is getting closer to practi
 # Getting Started
 
 Local build is only supported on linux.
-For other platforms, please use the devcontainer that we prepared.
+For other platforms, please use [Vagrantfile](#setting-up-vagrant) that we prepared.
 
 ## Requires
 
@@ -121,10 +121,30 @@ Starting the docker daemon.
 $ dockerd --experimental --add-runtime="youki=$(pwd)/target/x86_64-unknown-linux-gnu/debug/youki"
 ```
 
+In case you get an error like :
+
+```
+failed to start daemon: pid file found, ensure docker is not running or delete /var/run/docker.pid
+```
+
+That means your normal Docker daemon is running, and it needs to be stopped. For that, open a new shell in same directory and run :
+
+```
+$ systemctl stop docker # might need root permission
+```
+
+Now in the same shell run the first command, which should start the docker daemon.
+
 You can use youki in a different terminal to start the container.
 
 ```
 $ docker run -it --rm --runtime youki busybox
+```
+
+Afterwards, you can close the docker daemon process in other the other terminal. To restart normal docker daemon (if you had stopped it before), run :
+
+```
+$ systemctl start docker # might need root permission
 ```
 
 ### Integration test
@@ -134,6 +154,20 @@ Go and node-tap are required to run integration test. See the [opencontainers/ru
 ```
 $ git submodule update --init --recursive
 $ ./integration_test.sh
+```
+
+### Setting up Vagrant
+
+You can try youki on platforms other than linux by using the Vagrantfile we have prepared.
+
+```
+$ git clone git@github.com:containers/youki.git
+$ cd youki
+$ vagrant up
+$ vagrant ssh
+# in virtual machine
+$ cd youki # in virtual machine
+$ ./build.sh
 ```
 
 # Community

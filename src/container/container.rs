@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,19 +8,29 @@ use chrono::DateTime;
 use nix::unistd::Pid;
 
 use chrono::Utc;
+use oci_spec::Spec;
 use procfs::process::Process;
 
-use crate::command::syscall::create_syscall;
+use crate::syscall::syscall::create_syscall;
 
 use crate::container::{ContainerStatus, State};
 
 /// Structure representing the container data
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Container {
     // State of the container
     pub state: State,
     // indicated the directory for the root path in the container
     pub root: PathBuf,
+}
+
+impl Default for Container {
+    fn default() -> Self {
+        Self {
+            state: State::default(),
+            root: PathBuf::from("/run/youki"),
+        }
+    }
 }
 
 impl Container {
@@ -56,7 +67,9 @@ impl Container {
                     match proc.stat.state().unwrap() {
                         ProcState::Zombie | ProcState::Dead => ContainerStatus::Stopped,
                         _ => match self.status() {
-                            ContainerStatus::Creating | ContainerStatus::Created => self.status(),
+                            ContainerStatus::Creating
+                            | ContainerStatus::Created
+                            | ContainerStatus::Paused => self.status(),
                             _ => ContainerStatus::Running,
                         },
                     }
@@ -94,6 +107,18 @@ impl Container {
         self.state.status.can_delete()
     }
 
+    pub fn can_exec(&self) -> bool {
+        self.state.status == ContainerStatus::Running
+    }
+
+    pub fn can_pause(&self) -> bool {
+        self.state.status.can_pause()
+    }
+
+    pub fn can_resume(&self) -> bool {
+        self.state.status.can_resume()
+    }
+
     pub fn pid(&self) -> Option<Pid> {
         self.state.pid.map(Pid::from_raw)
     }
@@ -129,6 +154,24 @@ impl Container {
         None
     }
 
+    pub fn bundle(&self) -> String {
+        self.state.bundle.clone()
+    }
+
+    pub fn set_systemd(mut self, should_use: bool) -> Self {
+        self.state.use_systemd = Some(should_use);
+        self
+    }
+
+    pub fn set_annotations(mut self, annotations: Option<HashMap<String, String>>) -> Self {
+        self.state.annotations = annotations;
+        self
+    }
+
+    pub fn systemd(&self) -> Option<bool> {
+        self.state.use_systemd
+    }
+
     pub fn update_status(&self, status: ContainerStatus) -> Self {
         let created = match (status, self.state.created) {
             (ContainerStatus::Created, None) => Some(Utc::now()),
@@ -153,7 +196,7 @@ impl Container {
         })
     }
 
-    pub fn bundle(&self) -> String {
-        self.state.bundle.clone()
+    pub fn spec(&self) -> Result<Spec> {
+        Spec::load(self.root.join("config.json"))
     }
 }

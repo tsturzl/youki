@@ -1,126 +1,213 @@
-use std::fs;
-use std::io::prelude::*;
-use std::path::Path;
-use std::process::exit;
-
-use anyhow::Result;
-
 use anyhow::bail;
-use child::ChildProcess;
-use init::InitProcess;
+use anyhow::Context;
+use anyhow::Result;
+use nix::errno::Errno;
 use nix::sched;
-use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd;
+use nix::sys;
+use nix::sys::mman;
 use nix::unistd::Pid;
+use std::ptr;
 
-use crate::cgroups::common::CgroupManager;
-use crate::container::Container;
-use crate::container::ContainerStatus;
-use crate::process::{child, init, parent, Process};
-use crate::rootless::Rootless;
+// The clone callback is used in clone call. It is a boxed closure and it needs
+// to trasfer the ownership of related memory to the new process.
+type CloneCb = Box<dyn FnOnce() -> isize + Send>;
 
-/// Function to perform the first fork for in order to run the container process
-pub fn fork_first<P: AsRef<Path>>(
-    pid_file: &Option<P>,
-    rootless: &Option<Rootless>,
-    linux: &oci_spec::Linux,
-    container: Option<&Container>,
-    cmanager: Box<dyn CgroupManager>,
-) -> Result<Process> {
-    // create new parent process structure
-    let (mut parent, parent_channel) = parent::ParentProcess::new(rootless.clone())?;
-    // create a new child process structure with sending end of parent process
-    let mut child = child::ChildProcess::new(parent_channel)?;
-
-    // fork the process
-    match unsafe { unistd::fork()? } {
-        // in the child process
-        unistd::ForkResult::Child => {
-            // if Out-of-memory score adjustment is set in specification.
-            // set the score value for the current process
-            // check https://dev.to/rrampage/surviving-the-linux-oom-killer-2ki9 for some more information
-            if let Some(ref r) = linux.resources {
-                if let Some(adj) = r.oom_score_adj {
-                    let mut f = fs::File::create("/proc/self/oom_score_adj")?;
-                    f.write_all(adj.to_string().as_bytes())?;
-                }
-            }
-
-            // if new user is specified in specification, this will be true
-            // and new namespace will be created, check https://man7.org/linux/man-pages/man7/user_namespaces.7.html
-            // for more information
-            if rootless.is_some() {
-                log::debug!("creating new user namespace");
-                sched::unshare(sched::CloneFlags::CLONE_NEWUSER)?;
-
-                // child needs to be dumpable, otherwise the non root parent is not
-                // allowed to write the uid/gid maps
-                prctl::set_dumpable(true).unwrap();
-                child.request_identifier_mapping()?;
-                child.wait_for_mapping_ack()?;
-                prctl::set_dumpable(false).unwrap();
-            }
-
-            Ok(Process::Child(child))
+/// clone uses syscall clone(2) to create a new process for the container init
+/// process. Using clone syscall gives us better control over how to can create
+/// the new container process, where we can enter into namespaces directly instead
+/// of using unshare and fork. This call will only create one new process, instead
+/// of two using fork.
+pub fn clone(cb: CloneCb, clone_flags: sched::CloneFlags) -> Result<Pid> {
+    // Use sysconf to find the page size. If there is an error, we assume
+    // the default 4K page size.
+    let page_size: usize = unsafe {
+        match libc::sysconf(libc::_SC_PAGE_SIZE) {
+            -1 => 4 * 1024, // default to 4K page size
+            x => x as usize,
         }
-        // in the parent process
-        unistd::ForkResult::Parent { child } => {
-            // wait for child to fork init process and report back its pid
-            let init_pid = parent.wait_for_child_ready(child)?;
-            log::debug!("init pid is {:?}", init_pid);
-            if rootless.is_none() && linux.resources.is_some() {
-                cmanager.add_task(Pid::from_raw(init_pid))?;
-                cmanager.apply(&linux.resources.as_ref().unwrap())?;
-            }
+    };
 
-            if let Some(container) = container {
-                // update status and pid of the container process
-                container
-                    .update_status(ContainerStatus::Created)
-                    .set_creator(nix::unistd::geteuid().as_raw())
-                    .set_pid(init_pid)
-                    .save()?;
-            }
+    // Find out the default stack max size through getrlimit.
+    let mut rlimit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    unsafe { Errno::result(libc::getrlimit(libc::RLIMIT_STACK, &mut rlimit))? };
+    let default_stack_size = rlimit.rlim_cur as usize;
 
-            // if file to write the pid to is specified, write pid of the child
-            if let Some(pid_file) = pid_file {
-                fs::write(&pid_file, format!("{}", child))?;
-            }
-            Ok(Process::Parent(parent))
+    // Using the clone syscall requires us to create the stack space for the
+    // child process instead of taken cared for us like fork call. We use mmap
+    // here to create the stack.  Instead of guessing how much space the child
+    // process needs, we allocate through mmap to the system default limit,
+    // which is 8MB on most of the linux system today. This is OK since mmap
+    // will only researve the address space upfront, instead of allocating
+    // physical memory upfront.  The stack will grow as needed, up to the size
+    // researved, so no wasted memory here. Lastly, the child stack only needs
+    // to support the container init process set up code in Youki. When Youki
+    // calls exec into the container payload, exec will reset the stack.  Note,
+    // do not use MAP_GROWSDOWN since it is not well supported.
+    // Ref: https://man7.org/linux/man-pages/man2/mmap.2.html
+    let child_stack = unsafe {
+        mman::mmap(
+            ptr::null_mut(),
+            default_stack_size,
+            mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE,
+            mman::MapFlags::MAP_PRIVATE | mman::MapFlags::MAP_ANONYMOUS | mman::MapFlags::MAP_STACK,
+            -1,
+            0,
+        )?
+    };
+    // Consistant with how pthread_create sets up the stack, we create a
+    // guard page of 1 page, to protect the child stack collision. Note, for
+    // clone call, the child stack will grow downward, so the bottom of the
+    // child stack is in the beginning.
+    unsafe {
+        mman::mprotect(child_stack, page_size, mman::ProtFlags::PROT_NONE)
+            .with_context(|| "Failed to create guard page")?
+    };
+
+    // Since the child stack for clone grows downward, we need to pass in
+    // the top of the stack address.
+    let child_stack_top = unsafe { child_stack.add(default_stack_size) };
+
+    // Adds SIGCHLD flag to mimic the same behavior as fork.
+    let signal = sys::signal::Signal::SIGCHLD;
+    let combined = clone_flags.bits() | signal as libc::c_int;
+
+    // We are passing the boxed closure "cb" into the clone function as the a
+    // function pointer in C. The box closure in Rust is both a function pointer
+    // and a struct. However, when casting the box closure into libc::c_void,
+    // the function pointer will be lost. Therefore, to work around the issue,
+    // we double box the closure. This is consistant with how std::unix::thread
+    // handles the closure.
+    // Ref: https://github.com/rust-lang/rust/blob/master/library/std/src/sys/unix/thread.rs
+    let data = Box::into_raw(Box::new(cb));
+    // The main is a wrapper function passed into clone call below. The "data"
+    // arg is actually a raw pointer to a Box closure. so here, we re-box the
+    // pointer back into a box closure so the main takes ownership of the
+    // memory. Then we can call the closure passed in.
+    extern "C" fn main(data: *mut libc::c_void) -> libc::c_int {
+        unsafe { Box::from_raw(data as *mut CloneCb)() as i32 }
+    }
+
+    // The nix::sched::clone wrapper doesn't provide the right interface.  Using
+    // the clone syscall is one of the rare cases where we don't want rust to
+    // manage the child stack memory. Instead, we want to use c_void directly
+    // here.  Therefore, here we are using libc::clone syscall directly for
+    // better control.  The child stack will be cleaned when exec is called or
+    // the child process terminates. The nix wrapper also does not treat the
+    // closure memory correctly. The wrapper implementation fails to pass the
+    // right ownership to the new child process.
+    // Ref: https://github.com/nix-rust/nix/issues/919
+    // Ref: https://github.com/nix-rust/nix/pull/920
+    let res = unsafe { libc::clone(main, child_stack_top, combined, data as *mut libc::c_void) };
+    match res {
+        -1 => {
+            // Since the clone call failed, the closure passed in didn't get
+            // consumed. To complete the circle, we can safely box up the
+            // closure again and let rust manage this memory for us.
+            unsafe { drop(Box::from_raw(data)) };
+            bail!(
+                "Failed clone to create new process: {:?}",
+                Errno::result(res)
+            )
         }
+        pid => Ok(Pid::from_raw(pid)),
     }
 }
 
-/// Function to perform the second fork, which will spawn the actual container process
-pub fn fork_init(mut child_process: ChildProcess) -> Result<Process> {
-    // setup sockets for init process
-    let sender_for_child = child_process.setup_pipe()?;
-    // for the process into current process (C1) (which is child of first_fork) and init process
-    match unsafe { unistd::fork()? } {
-        // if it is child process, create new InitProcess structure and return
-        unistd::ForkResult::Child => Ok(Process::Init(InitProcess::new(sender_for_child))),
-        // in the forking process C1
-        unistd::ForkResult::Parent { child } => {
-            // wait for init process to be ready
-            child_process.wait_for_init_ready()?;
-            // notify the parent process (original youki process) that init process is forked and ready
-            child_process.notify_parent(child)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::bail;
+    use nix::sys::wait;
+    use nix::unistd;
 
-            // wait for the init process, which is container process, to change state
-            // check https://man7.org/linux/man-pages/man3/wait.3p.html for more information
-            match waitpid(child, None)? {
-                // if normally exited
-                WaitStatus::Exited(pid, status) => {
-                    log::debug!("exited pid: {:?}, status: {:?}", pid, status);
-                    exit(status);
+    #[test]
+    fn test_fork_clone() -> Result<()> {
+        let cb = || -> Result<()> {
+            // In a new pid namespace, pid of this process should be 1
+            let pid = unistd::getpid();
+            assert_eq!(unistd::Pid::from_raw(1), pid, "PID should set to 1");
+
+            Ok(())
+        };
+
+        // For now, we test clone with new pid and user namespace. user
+        // namespace is needed for the test to run without root
+        let flags = sched::CloneFlags::CLONE_NEWPID | sched::CloneFlags::CLONE_NEWUSER;
+        let pid = super::clone(
+            Box::new(move || {
+                if cb().is_err() {
+                    return -1;
                 }
-                // if terminated by a signal
-                WaitStatus::Signaled(pid, status, _) => {
-                    log::debug!("signaled pid: {:?}, status: {:?}", pid, status);
-                    exit(0);
-                }
-                _ => bail!("abnormal exited!"),
-            }
+
+                0
+            }),
+            flags,
+        )?;
+
+        let status = nix::sys::wait::waitpid(pid, None)?;
+        if let nix::sys::wait::WaitStatus::Exited(_, exit_code) = status {
+            assert_eq!(
+                0, exit_code,
+                "Process didn't exit correctly {:?}",
+                exit_code
+            );
+
+            return Ok(());
         }
+
+        bail!("Process didn't exit correctly")
+    }
+
+    #[test]
+    fn test_clone_stack_allocation() -> Result<()> {
+        let flags = sched::CloneFlags::empty();
+        let pid = super::clone(
+            Box::new(|| {
+                let mut array_on_stack = [0u8; 4096];
+                array_on_stack.iter_mut().for_each(|x| *x = 0);
+
+                0
+            }),
+            flags,
+        )?;
+
+        let status = nix::sys::wait::waitpid(pid, None)?;
+        if let nix::sys::wait::WaitStatus::Exited(_, exit_code) = status {
+            assert_eq!(
+                0, exit_code,
+                "Process didn't exit correctly {:?}",
+                exit_code
+            );
+
+            return Ok(());
+        }
+
+        bail!("Process didn't exit correctly")
+    }
+
+    fn clone_closure_ownership_test_payload() -> super::CloneCb {
+        // The vec should not be deallocated after this function returns. The
+        // ownership should correctly transfer to the closure returned, to be
+        // passed to the clone and new child process.
+        let numbers: Vec<i32> = (0..101).into_iter().collect();
+        Box::new(move || {
+            assert_eq!(numbers.iter().sum::<i32>(), 5050);
+            0
+        })
+    }
+
+    #[test]
+    fn test_clone_closure_ownership() -> Result<()> {
+        let flags = sched::CloneFlags::empty();
+
+        let pid = super::clone(clone_closure_ownership_test_payload(), flags)?;
+        let exit_status =
+            wait::waitpid(pid, Some(wait::WaitPidFlag::__WALL)).expect("Waiting for child");
+        assert_eq!(exit_status, wait::WaitStatus::Exited(pid, 0));
+
+        Ok(())
     }
 }
