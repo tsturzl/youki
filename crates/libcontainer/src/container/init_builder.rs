@@ -39,11 +39,16 @@ impl<'a> InitContainerBuilder<'a> {
 
     /// Creates a new container
     pub fn build(self) -> Result<Container> {
-        let spec = self.load_spec()?;
-        let container_dir = self.create_container_dir()?;
-        self.save_spec(&spec, &container_dir)?;
+        let spec = self.load_spec().context("failed to load spec")?;
+        let container_dir = self
+            .create_container_dir()
+            .context("failed to create container directory")?;
+        self.save_spec(&spec, &container_dir)
+            .context("failed to save spec")?;
 
-        let mut container = self.create_container_state(&container_dir)?;
+        let mut container = self
+            .create_container_state(&container_dir)
+            .context("failed to create container state")?;
         container
             .set_systemd(self.use_systemd)
             .set_annotations(spec.annotations().clone());
@@ -56,16 +61,15 @@ impl<'a> InitContainerBuilder<'a> {
         // if socket file path is given in commandline options,
         // get file descriptors of console socket
         let csocketfd = if let Some(console_socket) = &self.base.console_socket {
-            Some(tty::setup_console_socket(
-                &container_dir,
-                console_socket,
-                "console-socket",
-            )?)
+            Some(
+                tty::setup_console_socket(&container_dir, console_socket, "console-socket")
+                    .context("failed to setup console")?,
+            )
         } else {
             None
         };
 
-        let rootless = Rootless::new(&spec)?;
+        let rootless = Rootless::new(&spec).context("failed to create rootless container")?;
         let mut builder_impl = ContainerBuilderImpl {
             init: true,
             syscall: self.base.syscall,
@@ -81,8 +85,10 @@ impl<'a> InitContainerBuilder<'a> {
             preserve_fds: self.base.preserve_fds,
         };
 
-        builder_impl.create()?;
-        container.refresh_state()?;
+        builder_impl.create().context("failed to build container")?;
+        container
+            .refresh_state()
+            .context("failed to refresh state")?;
 
         Ok(container)
     }
@@ -101,10 +107,12 @@ impl<'a> InitContainerBuilder<'a> {
 
     fn load_spec(&self) -> Result<Spec> {
         let source_spec_path = self.bundle.join("config.json");
-        let mut spec = Spec::load(&source_spec_path)?;
+        let mut spec = Spec::load(&source_spec_path)
+            .with_context(|| format!("failed to load spec from path: {:?}", source_spec_path))?;
         Self::validate_spec(&spec).context("failed to validate runtime spec")?;
 
-        spec.canonicalize_rootfs(&self.bundle)?;
+        spec.canonicalize_rootfs(&self.bundle)
+            .context("failed ot canonicalize root")?;
         Ok(spec)
     }
 
