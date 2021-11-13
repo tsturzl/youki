@@ -25,6 +25,14 @@ impl Container {
     /// # }
     /// ```
     pub fn delete(&mut self, force: bool) -> Result<()> {
+        match self.try_delete(force) {
+            Ok(_) => std::process::exit(0),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Deletes the container, but doesn't exit after
+    pub fn try_delete(&mut self, force: bool) -> Result<()> {
         self.refresh_status()
             .context("failed to refresh container status")?;
         if self.can_kill() && force {
@@ -73,7 +81,7 @@ impl Container {
                         .with_context(|| "failed to run post stop hooks")?;
                 }
             }
-            std::process::exit(0)
+            Ok(())
         } else {
             bail!(
                 "{} could not be deleted because it was {:?}",
