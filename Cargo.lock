@@ -440,9 +440,9 @@ dependencies = [
 
 [[package]]
 name = "futures-channel"
-version = "0.3.17"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5da6ba8c3bb3c165d3c7319fc1cc8304facf1fb8db99c5de877183c08a273888"
+checksum = "2bfc52cbddcfd745bf1740338492bb0bd83d76c67b445f91c5fb29fae29ecaa1"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -450,9 +450,9 @@ dependencies = [
 
 [[package]]
 name = "futures-core"
-version = "0.3.17"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88d1c26957f23603395cd326b0ffe64124b818f4449552f960d815cfba83a53d"
+checksum = "d2acedae88d38235936c3922476b10fced7b2b68136f5e3c03c2d5be348a1115"
 
 [[package]]
 name = "futures-executor"
@@ -487,9 +487,9 @@ dependencies = [
 
 [[package]]
 name = "futures-sink"
-version = "0.3.17"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36ea153c13024fe480590b3e3d4cad89a0cfacecc24577b68f86c6ced9c2bc11"
+checksum = "ca0bae1fe9752cf7fd9b0064c674ae63f97b37bc714d745cbde0afb7ec4e6765"
 
 [[package]]
 name = "futures-task"
@@ -611,7 +611,7 @@ dependencies = [
  "clap_derive",
  "flate2",
  "libcontainer",
- "nix",
+ "nix 0.22.3",
  "oci-spec",
  "once_cell",
  "procfs",
@@ -664,7 +664,7 @@ dependencies = [
  "libbpf-sys",
  "libc",
  "log",
- "nix",
+ "nix 0.23.0",
  "oci-spec",
  "procfs",
  "quickcheck",
@@ -690,7 +690,7 @@ dependencies = [
  "libseccomp",
  "log",
  "mio",
- "nix",
+ "nix 0.23.0",
  "oci-spec",
  "path-clean",
  "prctl",
@@ -793,6 +793,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9f1c5b025cda876f66ef43a113f91ebc9f4ccef34843000e0adf6ebbab84e21"
 dependencies = [
  "winapi",
+]
+
+[[package]]
+name = "nix"
+version = "0.22.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4916f159ed8e5de0082076562152a76b7a1f64a01fd9d1e0fea002c37624faf"
+dependencies = [
+ "bitflags",
+ "cc",
+ "cfg-if",
+ "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -943,7 +956,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "059a34f111a9dee2ce1ac2826a68b24601c4298cfeb1a587c3cb493d5ab46f52"
 dependencies = [
  "libc",
- "nix",
+ "nix 0.23.0",
 ]
 
 [[package]]
@@ -1398,7 +1411,7 @@ dependencies = [
  "libcgroups",
  "libcontainer",
  "log",
- "nix",
+ "nix 0.23.0",
  "oci-spec",
  "once_cell",
  "pentacle",
